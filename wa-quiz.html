@@ -76,6 +76,11 @@
     .radio-col { display: flex; flex-direction: column; gap: 5px; }
     input[type=range] { width: 100%; accent-color: #e05252; margin: 5px 0 2px; cursor: pointer; }
     .cutoff-lbl { font-size: 0.72rem; color: #4a5a78; }
+    /* ── Preset buttons ── */
+    .preset-row { display: flex; gap: 5px; margin: 5px 0 2px; }
+    .preset-btn { flex: 1; padding: 5px 4px; background: #12151c; border: 1px solid #2a3050; border-radius: 5px; color: #5a6380; font-size: 0.72rem; font-weight: 600; cursor: pointer; transition: all 0.12s; }
+    .preset-btn:hover { border-color: #4a5a78; color: #9aa0b8; }
+    .preset-btn.active { border-color: #e05252; color: #e05252; background: #1e1414; }
     .net-radios { display: flex; flex-wrap: wrap; gap: 6px 12px; }
     select { width: 100%; background: #12151c; border: 2px solid #2a3050; border-radius: 6px; padding: 7px 9px; color: #dde1ea; font-size: 0.85rem; outline: none; cursor: pointer; }
     select:focus { border-color: #e05252; }
@@ -176,7 +181,7 @@
             <button class="btn btn-primary"   id="submit-btn">Submit</button>
             <button class="btn btn-secondary" id="skip-btn">See Name</button>
           </div>
-          <div id="hint-text" class="hint-text">Enter to submit · Esc to skip</div>
+          <div id="hint-text" class="hint-text">Enter to submit · Shift/Esc to skip</div>
           <div id="completion"></div>
         </div>
 
@@ -209,6 +214,17 @@
             <div class="filter-label">Start from</div>
             <select id="learn-town-select"></select>
           </div>
+          <div class="filter-group" id="learn-town-pool" style="display:none">
+            <div class="filter-label">Town pool: Top <span id="learn-town-count-lbl">100</span></div>
+            <div class="preset-row">
+              <button class="preset-btn" id="lp-10"  data-n="10">Top 10</button>
+              <button class="preset-btn" id="lp-25"  data-n="25">Top 25</button>
+              <button class="preset-btn" id="lp-50"  data-n="50">Top 50</button>
+              <button class="preset-btn active" id="lp-100" data-n="100">Top 100</button>
+            </div>
+            <input type="range" id="learn-town-slider" min="1" max="1938" value="100" step="1">
+            <div id="learn-town-cutoff-lbl" class="cutoff-lbl"></div>
+          </div>
           <button class="btn btn-primary" id="learn-start-btn" style="width:100%;margin-top:8px">Begin</button>
         </div>
 
@@ -232,7 +248,7 @@
             <button class="btn btn-primary"   id="learn-submit-btn">Submit</button>
             <button class="btn btn-secondary" id="learn-skip-btn">See Name</button>
           </div>
-          <div class="hint-text">Enter to submit · Esc to skip</div>
+          <div class="hint-text">Enter to submit · Shift/Esc to skip</div>
         </div>
 
         <!-- Results -->
@@ -275,6 +291,12 @@
           </div>
           <div class="filter-group" id="town-filter-group">
             <div class="filter-label">Towns: Top <span id="town-count-lbl">50</span></div>
+            <div class="preset-row">
+              <button class="preset-btn" id="qp-10"  data-n="10">Top 10</button>
+              <button class="preset-btn" id="qp-25"  data-n="25">Top 25</button>
+              <button class="preset-btn active" id="qp-50"  data-n="50">Top 50</button>
+              <button class="preset-btn" id="qp-100" data-n="100">Top 100</button>
+            </div>
             <input type="range" id="town-slider" min="1" max="1938" value="50" step="1">
             <div id="town-cutoff-lbl" class="cutoff-lbl"></div>
           </div>
@@ -288,6 +310,14 @@
             </div>
           </div>
           <button class="btn btn-secondary" id="reset-btn" style="width:100%;margin-top:8px">Reset Quiz</button>
+        </div>
+        <div class="filter-group">
+          <div class="filter-label">Focus Area</div>
+          <div style="display:flex;gap:7px;">
+            <button class="btn btn-secondary" id="area-draw-btn" style="flex:1;padding:7px 8px;font-size:0.8rem">Draw on Map</button>
+            <button class="btn btn-secondary" id="area-clear-btn" style="padding:7px 10px;font-size:0.8rem;display:none">✕ Clear</button>
+          </div>
+          <div id="area-status" style="font-size:0.7rem;color:#5a6380;margin-top:4px;min-height:1em"></div>
         </div>
         <div class="filter-group" style="margin-bottom:0">
           <div class="filter-label">Map Zoom</div>
@@ -369,12 +399,13 @@ const correctCounts = {};
 const score = { correct: 0, total: 0, streak: 0 };
 
 const cfg = {
-  towns:     true,
-  roads:     true,
-  mode:      'name',
-  townCount: 50,
-  roadNet:   'all',
-  zoomMode:  'road',   // 'road' = fit to item | 'state' = stay at full state
+  towns:      true,
+  roads:      true,
+  mode:       'name',
+  townCount:  50,
+  roadNet:    'all',
+  zoomMode:   'road',   // 'road' = fit to item | 'state' = stay at full state
+  areaBounds: null,     // L.LatLngBounds | null — restrict quiz to this region
 };
 
 // ── Learn state ───────────────────────────────────────────────────────────────
@@ -384,6 +415,7 @@ const learnState = {
   category:     'roads',
   learnedRefs:  new Set(),
   learnedTowns: new Set(),
+  townCount:    100,   // how many top towns to include in the learn pool
   batchNum:     0,
   batch:        [],   // [{data, type, result}]
   phase:        'setup',
@@ -394,9 +426,20 @@ const learnState = {
 };
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
-function getActiveTowns()  { return WA_TOWNS.slice(0, cfg.townCount); }
+function getActiveTowns() {
+  const towns = WA_TOWNS.slice(0, cfg.townCount);
+  if (!cfg.areaBounds) return towns;
+  return towns.filter(t => cfg.areaBounds.contains([t.lat, t.lon]));
+}
 function getActiveRoutes() {
-  return cfg.roadNet === 'all' ? WA_ROUTES : WA_ROUTES.filter(r => r.network === cfg.roadNet);
+  const routes = cfg.roadNet === 'all' ? WA_ROUTES : WA_ROUTES.filter(r => r.network === cfg.roadNet);
+  if (!cfg.areaBounds) return routes;
+  return routes.filter(r => {
+    for (const seg of r.segs)
+      for (const [lat, lon] of seg)
+        if (cfg.areaBounds.contains([lat, lon])) return true;
+    return false;
+  });
 }
 
 // ── Quiz layer management ─────────────────────────────────────────────────────
@@ -641,7 +684,7 @@ function renderQuestion(item) {
   document.getElementById('btn-row').style.display = 'flex';
   document.getElementById('find-banner').style.display = 'none';
   document.getElementById('submit-btn').textContent = 'Submit';
-  document.getElementById('hint-text').textContent = cfg.mode === 'name' ? 'Enter to submit · Esc to skip' : 'Click on the map · Esc to skip';
+  document.getElementById('hint-text').textContent = cfg.mode === 'name' ? 'Enter to submit · Shift/Esc to skip' : 'Click on the map · Shift/Esc to skip';
   document.getElementById('q-mode-label').textContent = cfg.mode === 'name' ? 'Highlight → Name' : 'Name → Find & Click';
   document.getElementById('map').className = cfg.mode === 'find' ? '' : 'pan-mode';
   const aa = document.getElementById('answer-area');
@@ -694,7 +737,7 @@ function makeInput(id, placeholder, onEnter, onEsc) {
   const inp = document.createElement('input');
   inp.type = 'text'; inp.className = 'answer-input'; inp.id = id;
   inp.placeholder = placeholder; inp.autocomplete = 'off'; inp.spellcheck = false;
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') onEnter(); if (e.key === 'Escape') onEsc(); });
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') onEnter(); if (e.key === 'Escape' || e.key === 'Shift') onEsc(); });
   return inp;
 }
 
@@ -869,6 +912,7 @@ function revealCorrectLocation() {
 
 // ── Find & Click ──────────────────────────────────────────────────────────────
 map.on('click', function (e) {
+  if (drawMode) return;
   if (currentMode !== 'quiz' || cfg.mode !== 'find' || !currentItem || awaitingNext) return;
   const { lat, lng } = e.latlng;
   feedbackLayer.clearLayers();
@@ -915,6 +959,14 @@ function updateTownSlider() {
   document.getElementById('town-count-lbl').textContent = n;
   const t = WA_TOWNS[n - 1];
   document.getElementById('town-cutoff-lbl').textContent = t ? `#${n}: ${t.name} (pop. ${t.pop.toLocaleString()})` : '';
+  [10, 25, 50, 100].forEach(v => document.getElementById('qp-' + v)?.classList.toggle('active', v === n));
+}
+function updateLearnTownSlider() {
+  const n = learnState.townCount;
+  document.getElementById('learn-town-count-lbl').textContent = n;
+  const t = WA_TOWNS[n - 1];
+  document.getElementById('learn-town-cutoff-lbl').textContent = t ? `#${n}: ${t.name} (pop. ${t.pop.toLocaleString()})` : '';
+  [10, 25, 50, 100].forEach(v => document.getElementById('lp-' + v)?.classList.toggle('active', v === n));
 }
 function updateFilterVisibility() {
   document.getElementById('town-filter-group').style.display = cfg.towns ? '' : 'none';
@@ -1012,10 +1064,11 @@ function pickBatchRoads(seedRef) {
 }
 
 function pickBatchTowns(seedTown) {
-  if (!seedTown) seedTown = WA_TOWNS.find(t => !learnState.learnedTowns.has(t.name)) || WA_TOWNS[0];
+  const pool = WA_TOWNS.slice(0, learnState.townCount);
+  if (!seedTown) seedTown = pool.find(t => !learnState.learnedTowns.has(t.name)) || pool[0];
   const batch   = [seedTown];
   const inBatch = new Set([seedTown.name]);
-  const nearby  = WA_TOWNS
+  const nearby  = pool
     .filter(t => !inBatch.has(t.name) && !learnState.learnedTowns.has(t.name))
     .sort((a, b) => haverDist(seedTown.lat, seedTown.lon, a.lat, a.lon) - haverDist(seedTown.lat, seedTown.lon, b.lat, b.lon));
   for (const t of nearby) { if (batch.length >= 5) break; batch.push(t); inBatch.add(t.name); }
@@ -1280,7 +1333,7 @@ function prepareNextBatch() {
 
 // ── Learn progress display ────────────────────────────────────────────────────
 function updateLearnProgress() {
-  const total = learnState.category === 'roads' ? WA_ROUTES.length : WA_TOWNS.length;
+  const total = learnState.category === 'roads' ? WA_ROUTES.length : learnState.townCount;
   const done  = learnState.category === 'roads' ? learnState.learnedRefs.size : learnState.learnedTowns.size;
   document.getElementById('learn-progress-text').textContent = `${done} of ${total} ${learnState.category} introduced`;
   document.getElementById('learn-progress-bar-fill').style.width = total > 0 ? (done / total * 100) + '%' : '0%';
@@ -1317,6 +1370,7 @@ function renderLearnStartPanel() {
   }
 
   updateLearnProgress();
+  updateLearnTownSlider();
 
   // Map: zoom to whole state
   map.fitBounds(WA_BOUNDS, { animate: true, duration: 0.8, padding: [10, 10] });
@@ -1385,9 +1439,35 @@ document.getElementById('tab-learn').addEventListener('click', () => switchMode(
 // Learn category toggle
 document.querySelectorAll('input[name="learn-cat"]').forEach(r => r.addEventListener('change', e => {
   learnState.category = e.target.value;
-  document.getElementById('learn-road-start').style.display = learnState.category === 'roads' ? '' : 'none';
-  document.getElementById('learn-town-start').style.display = learnState.category === 'towns' ? '' : 'none';
+  const isTowns = learnState.category === 'towns';
+  document.getElementById('learn-road-start').style.display  = isTowns ? 'none' : '';
+  document.getElementById('learn-town-start').style.display  = isTowns ? '' : 'none';
+  document.getElementById('learn-town-pool').style.display   = isTowns ? '' : 'none';
 }));
+
+// Quiz preset buttons
+document.querySelectorAll('#town-filter-group .preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    cfg.townCount = +btn.dataset.n;
+    document.getElementById('town-slider').value = cfg.townCount;
+    updateTownSlider();
+    rebuild();
+  });
+});
+
+// Learn preset buttons
+document.querySelectorAll('#learn-town-pool .preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    learnState.townCount = +btn.dataset.n;
+    document.getElementById('learn-town-slider').value = learnState.townCount;
+    updateLearnTownSlider();
+  });
+});
+const learnTownSlider = document.getElementById('learn-town-slider');
+learnTownSlider.addEventListener('input', () => {
+  learnState.townCount = +learnTownSlider.value;
+  updateLearnTownSlider();
+});
 
 // Learn start button
 document.getElementById('learn-start-btn').addEventListener('click', () => {
@@ -1402,7 +1482,8 @@ document.getElementById('learn-start-btn').addEventListener('click', () => {
     const name = document.getElementById('learn-town-select').value;
     learnState.learnedTowns.clear();
     learnState.batchNum = 0;
-    const seedTown = WA_TOWNS.find(t => t.name === name) || WA_TOWNS[0];
+    const pool = WA_TOWNS.slice(0, learnState.townCount);
+    const seedTown = pool.find(t => t.name === name) || pool[0];
     startBatch(pickBatchTowns(seedTown));
   }
 });
@@ -1435,11 +1516,93 @@ document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   if (currentMode === 'learn') {
     if (e.key === 'Enter') handleLearnSubmit();
-    if (e.key === 'Escape') handleLearnSkip();
+    if (e.key === 'Escape' || e.key === 'Shift') handleLearnSkip();
     return;
   }
   if (e.key === 'Enter' && awaitingNext) nextQuestion();
-  if (e.key === 'Escape') handleSkip();
+  if (e.key === 'Escape' || e.key === 'Shift') handleSkip();
+});
+
+// ── Area filter / draw mode ───────────────────────────────────────────────────
+let areaRectLayer = null;
+let drawMode      = false;
+let drawStart     = null;
+
+function enterDrawMode() {
+  drawMode = true;
+  drawStart = null;
+  map.dragging.disable();
+  map.getContainer().style.cursor = 'crosshair';
+  const btn = document.getElementById('area-draw-btn');
+  btn.textContent = 'Click & drag…';
+  btn.style.color = '#e05252';
+}
+
+function exitDrawMode() {
+  drawMode = false;
+  drawStart = null;
+  map.dragging.enable();
+  map.getContainer().style.cursor = '';
+  const btn = document.getElementById('area-draw-btn');
+  btn.textContent = 'Draw on Map';
+  btn.style.color = '';
+}
+
+function updateAreaStatus() {
+  if (!cfg.areaBounds) { document.getElementById('area-status').textContent = ''; return; }
+  const tc = WA_TOWNS.slice(0, cfg.townCount).filter(t => cfg.areaBounds.contains([t.lat, t.lon])).length;
+  const baseRoutes = cfg.roadNet === 'all' ? WA_ROUTES : WA_ROUTES.filter(r => r.network === cfg.roadNet);
+  const rc = baseRoutes.filter(r => {
+    for (const seg of r.segs) for (const [la, lo] of seg) if (cfg.areaBounds.contains([la, lo])) return true;
+    return false;
+  }).length;
+  document.getElementById('area-status').textContent =
+    `${tc} town${tc !== 1 ? 's' : ''}, ${rc} route${rc !== 1 ? 's' : ''} in area`;
+}
+
+map.on('mousedown', function(e) {
+  if (!drawMode) return;
+  drawStart = e.latlng;
+  if (areaRectLayer) { areaRectLayer.remove(); areaRectLayer = null; }
+  areaRectLayer = L.rectangle([drawStart, drawStart], {
+    color: '#e05252', weight: 2, fillColor: '#e05252', fillOpacity: 0.08,
+    dashArray: '6,4', interactive: false,
+  }).addTo(map);
+});
+
+map.on('mousemove', function(e) {
+  if (!drawMode || !drawStart || !areaRectLayer) return;
+  areaRectLayer.setBounds(L.latLngBounds(drawStart, e.latlng));
+});
+
+map.on('mouseup', function(e) {
+  if (!drawMode || !drawStart) return;
+  const bounds = L.latLngBounds(drawStart, e.latlng);
+  exitDrawMode();
+  // Ignore tiny clicks (not a real drag)
+  if (bounds.getNorthEast().distanceTo(bounds.getSouthWest()) < 5000) {
+    if (areaRectLayer) { areaRectLayer.remove(); areaRectLayer = null; }
+    return;
+  }
+  cfg.areaBounds = bounds;
+  if (areaRectLayer) areaRectLayer.setStyle({ dashArray: null, fillOpacity: 0.06 });
+  document.getElementById('area-clear-btn').style.display = '';
+  updateAreaStatus();
+  rebuild();
+  map.fitBounds(bounds, { padding: [30, 30], animate: true });
+});
+
+document.getElementById('area-draw-btn').addEventListener('click', () => {
+  if (drawMode) { exitDrawMode(); return; }
+  enterDrawMode();
+});
+document.getElementById('area-clear-btn').addEventListener('click', () => {
+  cfg.areaBounds = null;
+  if (areaRectLayer) { areaRectLayer.remove(); areaRectLayer = null; }
+  document.getElementById('area-clear-btn').style.display = 'none';
+  document.getElementById('area-status').textContent = '';
+  rebuild();
+  map.fitBounds(WA_BOUNDS, { padding: [10, 10], animate: true });
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
